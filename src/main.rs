@@ -16,8 +16,8 @@ fn main() {
                 span: Span,
                 ident: String::from("v"),
                 init: fix(Expr::Add(
-                    Box::new(fix(Expr::NumLit(3))),
-                    Box::new(fix(Expr::NumLit(4))),
+                    fix(Expr::NumLit(3)),
+                    fix(Expr::NumLit(4)),
                 )),
             }))),
             fix(Stmt::Let(fix(LetStmt {
@@ -516,7 +516,7 @@ struct ReturnStmtF<'ast, F: AstTy> {
 type Expr<'ast> = ExprF<'ast, Fix<TyParam>>;
 enum ExprF<'ast, F: AstTy> {
     Ident(Ident),
-    Add(Box<App<'ast, F, ExprF<'static, TyParam>>>, Box<App<'ast, F, ExprF<'static, TyParam>>>),
+    Add(App<'ast, F, ExprF<'static, TyParam>>, App<'ast, F, ExprF<'static, TyParam>>),
     NumLit(i64),
     /*...*/
 }
@@ -648,26 +648,11 @@ impl AstFunctor for ExprF<'static, TyParam> {
         match x {
             Ident(ident) => Ident(ident),
             Add(lhs, rhs) => Add(
-                Box::new(f.call(SAstNode::Expr(TEq::refl()), *lhs)),
-                Box::new(f.call(SAstNode::Expr(TEq::refl()), *rhs))
+                f.call(SAstNode::Expr(TEq::refl()), lhs),
+                f.call(SAstNode::Expr(TEq::refl()), rhs)
             ),
             NumLit(lit) => NumLit(lit),
         }
-    }
-}
-
-impl<T: AstNode> AstNode for Box<T> {
-    type TyCons<'ast, F: AstTy> = Box<T::TyCons<'ast, F>>;
-}
-
-impl<T: AstFunctor> AstFunctor for Box<T> {
-    fn fmap<'ast, F, U, G>(f: F, x: Box<T::TyCons<'ast, U>>) -> Box<T::TyCons<'ast, G>>
-    where
-        F: AstNodeMapFn<'ast, U, G>,
-        U: AstTy,
-        G: AstTy,
-    {
-        Box::new(T::fmap(f, *x))
     }
 }
 
@@ -744,15 +729,15 @@ impl<'ast, F: AstTy> Clone for ExprF<'ast, F> {
 
 // The fixpoint type
 #[repr(transparent)]
-struct Fix<N: AstNode>(N::TyCons<'static, Fix<TyParam>>);
+struct Fix<N: AstNode>(Box<N::TyCons<'static, Fix<TyParam>>>);
 
 impl<N: AstFunctor> Fix<N> {
     fn new(inner: N::TyCons<'static, Fix<TyParam>>) -> Self {
-        Self(inner)
+        Self(Box::new(inner))
     }
 
     fn out(self) -> N::TyCons<'static, Fix<TyParam>> {
-        self.0
+        *self.0
     }
 }
 
