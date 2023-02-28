@@ -31,11 +31,11 @@ fn main() {
             })))
         ],
     });
-    let count = cata(&CountLetsCataFn, ast.clone()).count;
+    let count = cata(&CountLetsCataFn, SAstNode::BlockStmt(TEq::refl()), ast).count;
     println!("{count}");
 
-    let ast2 = cata(&IdentityCataFn, ast).into_inner();
-    println!("{ast2:#?}");
+    // let ast2 = cata(&IdentityCataFn, ast).into_inner();
+    // println!("{ast2:#?}");
 }
 
 /* --- usage: count number of declared variables --- */
@@ -46,9 +46,13 @@ struct CountLetsCataFn;
 impl CataFn for CountLetsCataFn {
     type F = CountLets<TyParam>;
 
-    fn call<N>(&self, n: SAstNode<N>, node: N::TyCons<Self::F>) -> CountLets<N>
+    fn call<'ast, N>(
+        &self,
+        n: SAstNode<N>,
+        node: N::TyCons<'ast, Self::F>
+    ) -> <Self::F as AstTy>::TyCons<'ast, N>
     where
-        N: AstFunctor + 'static,
+        N: AstFunctor,
     {
         match n {
             // Base case, found one let statement
@@ -95,7 +99,7 @@ impl<F: AstNode> CountLets<F> {
 }
 
 impl AstTy for CountLets<TyParam> {
-    type TyCons<F: AstNode> = CountLets<F>;
+    type TyCons<'ast, F: AstNode> = CountLets<F>;
 }
 
 impl<F: AstNode> Clone for CountLets<F> {
@@ -103,7 +107,7 @@ impl<F: AstNode> Clone for CountLets<F> {
         CountLets::new(self.count)
     }
 }
-
+/*
 /* --- usage: traverse the ast without changin anything --- */
 
 // Won't change the AST, but will transform it's types into an equivalent AST.
@@ -352,6 +356,7 @@ enum Expr2 {
     Add(Box<Expr2>, Box<Expr2>),
     NumLit(i64),
 }
+*/
 
 /* --- schemes --- */
 
@@ -359,68 +364,68 @@ enum Expr2 {
 // since it needs to be generic over `N`.
 trait CataFn {
     type F: AstTy;
-    fn call<N>(
+    fn call<'ast, N>(
         &self,
         n: SAstNode<N>,
-        node: N::TyCons<Self::F>
-    ) -> <Self::F as AstTy>::TyCons<N>
+        node: N::TyCons<'ast, Self::F>
+    ) -> <Self::F as AstTy>::TyCons<'ast, N>
     where
-        N: AstFunctor + 'static;
+        N: AstFunctor;
 }
 
-impl<'a, T: CataFn + 'a> CataFn for &'a T {
+impl<T: CataFn> CataFn for &'_ T {
     type F = T::F;
-    fn call<N>(
+    fn call<'ast, N>(
         &self,
         n: SAstNode<N>,
-        node: N::TyCons<Self::F>
-    ) -> <Self::F as AstTy>::TyCons<N>
+        node: N::TyCons<'ast, Self::F>
+    ) -> <Self::F as AstTy>::TyCons<'ast, N>
     where
-        N: AstFunctor + 'static,
+        N: AstFunctor,
     {
         (*self).call(n, node)
     }
 }
 
-fn cata<'a, N, C>(f: &'a C, node: Fix<N>) -> App<C::F, N>
+fn cata<'ast, N, C>(f: C, n: SAstNode<N>, node: Fix<'ast, N>) -> App<'ast, C::F, N>
 where
-    N: AstFunctor + 'static,
-    C: CataFn + 'a,
+    N: AstFunctor,
+    C: CataFn + Copy,
 {
-    struct Fn<'a, C: CataFn>(&'a C);
+    struct Fn<C: CataFn>(C);
 
-    impl<'a, C> AstNodeMapFn<Fix<TyParam>, C::F> for Fn<'a, C>
+    impl<C> AstNodeMapFn<Fix<'static, TyParam>, C::F> for Fn<C>
     where
-        C: CataFn + 'a,
+        C: CataFn + Copy,
     {
-        fn call<N>(&self, x: Fix<N>) -> App<C::F, N>
+        fn call<'ast, N>(&self, n: SAstNode<N>, x: App<'ast, Fix<'static, TyParam>, N>) -> App<'ast, C::F, N>
         where
-            N: AstFunctor + 'static,
+            N: AstFunctor,
         {
-            cata::<'a, N, C>(self.0, x)
+            cata(self.0, n, x)
         }
     }
-    f.call(SAstNode::<N>::new(), N::fmap(Fn(f), node.out()))
+    f.call(n, N::fmap(Fn(f), node.out()))
 }
 
 /* --- traits --- */
 
 // Represents the fact that `Self` has kind `AstFunctor -> Type`
 trait AstTy {
-    type TyCons<N: AstNode>: Clone /* unfortunatelly appears to be needed */;
+    type TyCons<'ast, N: AstNode>/*: Clone /* unfortunatelly appears to be needed */*/;
 }
 
 // The family of types used in the AST. It has kind `(AstNode -> Type) -> Type`.
 trait AstNode {
     // The type constructor for `Self`.
-    type TyCons<F: AstTy>: Clone;
+    type TyCons<'ast, F: AstTy>/*: Clone*/;
 }
 
 // Functors (I think) that map nodes in the `AstNode` family.
 // `type AstFunctor :: ((AstNode -> Type) -> Type) -> Constaint
 trait AstFunctor: AstNode {
     // `fmap :: (forall n. u n -> g n) -> f u -> f g`
-    fn fmap<F, U, G>(f: F, x: Self::TyCons<U>) -> Self::TyCons<G>
+    fn fmap<'ast, F, U, G>(f: F, x: Self::TyCons<'ast, U>) -> Self::TyCons<'ast, G>
     where
         F: AstNodeMapFn<U, G>,
         U: AstTy,
@@ -434,9 +439,9 @@ where
     U: AstTy,
     G: AstTy,
 {
-    fn call<N>(&self, x: App<U, N>) -> App<G, N>
+    fn call<'ast, N>(&self, n: SAstNode<N>, x: App<'ast, U, N>) -> App<'ast, G, N>
     where
-        N: AstFunctor + 'static;
+        N: AstFunctor;
 }
 
 /* --- support types --- */
@@ -448,11 +453,11 @@ where
 enum TyParam {}
 
 impl AstNode for TyParam {
-    type TyCons<F: AstTy> = TyParam;
+    type TyCons<'ast, F: AstTy> = TyParam;
 }
 
 impl AstFunctor for TyParam {
-    fn fmap<F, U, G>(_: F, x: TyParam) -> Self::TyCons<G>
+    fn fmap<'ast, F, U, G>(_: F, x: TyParam) -> Self::TyCons<'ast, G>
     where
         F: AstNodeMapFn<U, G>,
         U: AstTy,
@@ -464,54 +469,54 @@ impl AstFunctor for TyParam {
 }
 
 impl AstTy for TyParam {
-    type TyCons<N: AstNode> = TyParam;
+    type TyCons<'ast, N: AstNode> = TyParam;
 }
 
-type App<F, X> = <F as AstTy>::TyCons<X>;
+type App<'ast, F, X> = <F as AstTy>::TyCons<'ast, X>;
 
 /* --- AST --- */
 
-type Stmt = StmtF<Fix<TyParam>>;
-enum StmtF<F: AstTy> {
-    Block(App<F, BlockStmtF<TyParam>>),
-    Expr(App<F, ExprF<TyParam>>),
-    If(App<F, IfStmtF<TyParam>>),
-    Let(App<F, LetStmtF<TyParam>>),
-    Return(App<F, ReturnStmtF<TyParam>>),
+type Stmt<'ast> = StmtF<'ast, Fix<'static, TyParam>>;
+enum StmtF<'ast, F: AstTy> {
+    Block(App<'ast, F, BlockStmtF<'static, TyParam>>),
+    Expr(App<'ast, F, ExprF<'static, TyParam>>),
+    If(App<'ast, F, IfStmtF<'static, TyParam>>),
+    Let(App<'ast, F, LetStmtF<'static, TyParam>>),
+    Return(App<'ast, F, ReturnStmtF<'static, TyParam>>),
     /*...*/
 }
 
-type BlockStmt = BlockStmtF<Fix<TyParam>>;
-struct BlockStmtF<F: AstTy> {
+type BlockStmt<'ast> = BlockStmtF<'ast, Fix<'static, TyParam>>;
+struct BlockStmtF<'ast, F: AstTy> {
     span: Span,
-    stmts: Vec<App<F, StmtF<TyParam>>>,
+    stmts: Vec<App<'ast, F, StmtF<'static, TyParam>>>,
 }
 
-type IfStmt = IfStmtF<Fix<TyParam>>;
-struct IfStmtF<F: AstTy> {
+type IfStmt<'ast> = IfStmtF<'ast, Fix<'static, TyParam>>;
+struct IfStmtF<'ast, F: AstTy> {
     span: Span,
-    cond: App<F, ExprF<TyParam>>,
-    then_block: App<F, BlockStmtF<TyParam>>,
-    else_block: Option<App<F, BlockStmtF<TyParam>>>,
+    cond: App<'ast, F, ExprF<'static, TyParam>>,
+    then_block: App<'ast, F, BlockStmtF<'static, TyParam>>,
+    else_block: Option<App<'ast, F, BlockStmtF<'static, TyParam>>>,
 }
 
-type LetStmt = LetStmtF<Fix<TyParam>>;
-struct LetStmtF<F: AstTy> {
+type LetStmt<'ast> = LetStmtF<'ast, Fix<'static, TyParam>>;
+struct LetStmtF<'ast, F: AstTy> {
     span: Span,
     ident: Ident,
-    init: App<F, ExprF<TyParam>>,
+    init: App<'ast, F, ExprF<'static, TyParam>>,
 }
 
-type ReturnStmt = ReturnStmtF<Fix<TyParam>>;
-struct ReturnStmtF<F: AstTy> {
+type ReturnStmt<'ast> = ReturnStmtF<'ast, Fix<'static, TyParam>>;
+struct ReturnStmtF<'ast, F: AstTy> {
     span: Span,
-    expr: App<F, ExprF<TyParam>>,
+    expr: App<'ast, F, ExprF<'static, TyParam>>,
 }
 
-type Expr = ExprF<Fix<TyParam>>;
-enum ExprF<F: AstTy> {
+type Expr<'ast> = ExprF<'ast, Fix<'static, TyParam>>;
+enum ExprF<'ast, F: AstTy> {
     Ident(Ident),
-    Add(Box<App<F, ExprF<TyParam>>>, Box<App<F, ExprF<TyParam>>>),
+    Add(Box<App<'ast, F, ExprF<'static, TyParam>>>, Box<App<'ast, F, ExprF<'static, TyParam>>>),
     NumLit(i64),
     /*...*/
 }
@@ -522,12 +527,12 @@ type Ident = String;
 
 /* --- trait impl for AST nodes --- */
 
-impl AstNode for StmtF<TyParam> {
-    type TyCons<F: AstTy> = StmtF<F>;
+impl AstNode for StmtF<'static, TyParam> {
+    type TyCons<'ast, F: AstTy> = StmtF<'ast, F>;
 }
 
-impl AstFunctor for StmtF<TyParam> {
-    fn fmap<F, U, G>(f: F, x: StmtF<U>) -> StmtF<G>
+impl AstFunctor for StmtF<'static, TyParam> {
+    fn fmap<'ast, F, U, G>(f: F, x: Self::TyCons<'ast, U>) -> Self::TyCons<'ast, G>
     where
         F: AstNodeMapFn<U, G>,
         U: AstTy,
@@ -535,22 +540,23 @@ impl AstFunctor for StmtF<TyParam> {
     {
         use StmtF::*;
 
+        let proof = SAstNode::Stmt(TEq::refl());
         match x {
-            Block(inner) => Block(f.call(inner)),
-            Expr(inner) => Expr(f.call(inner)),
-            If(inner) => If(f.call(inner)),
-            Let(inner) => Let(f.call(inner)),
-            Return(inner) => Return(f.call(inner)),
+            Block(inner) => Block(f.call(SAstNode::BlockStmt(TEq::refl()), inner)),
+            Expr(inner) => Expr(f.call(SAstNode::Expr(TEq::refl()), inner)),
+            If(inner) => If(f.call(SAstNode::IfStmt(TEq::refl()), inner)),
+            Let(inner) => Let(f.call(SAstNode::LetStmt(TEq::refl()), inner)),
+            Return(inner) => Return(f.call(SAstNode::ReturnStmt(TEq::refl()), inner)),
         }
     }
 }
 
-impl AstNode for BlockStmtF<TyParam> {
-    type TyCons<F: AstTy> = BlockStmtF<F>;
+impl AstNode for BlockStmtF<'static, TyParam> {
+    type TyCons<'ast, F: AstTy> = BlockStmtF<'ast, F>;
 }
 
-impl AstFunctor for BlockStmtF<TyParam> {
-    fn fmap<F, U, G>(f: F, x: BlockStmtF<U>) -> BlockStmtF<G>
+impl AstFunctor for BlockStmtF<'static, TyParam> {
+    fn fmap<'ast, F, U, G>(f: F, x: Self::TyCons<'ast, U>) -> Self::TyCons<'ast, G>
     where
         F: AstNodeMapFn<U, G>,
         U: AstTy,
@@ -561,18 +567,18 @@ impl AstFunctor for BlockStmtF<TyParam> {
             span,
             stmts: stmts
                 .into_iter()
-                .map(|stmt| f.call(stmt))
+                .map(|stmt| f.call(SAstNode::Stmt(TEq::refl()), stmt))
                 .collect(),
         }
     }
 }
 
-impl AstNode for IfStmtF<TyParam> {
-    type TyCons<F: AstTy> = IfStmtF<F>;
+impl AstNode for IfStmtF<'static, TyParam> {
+    type TyCons<'ast, F: AstTy> = IfStmtF<'ast, F>;
 }
 
-impl AstFunctor for IfStmtF<TyParam> {
-    fn fmap<F, U, G>(f: F, x: IfStmtF<U>) -> IfStmtF<G>
+impl AstFunctor for IfStmtF<'static, TyParam> {
+    fn fmap<'ast, F, U, G>(f: F, x: Self::TyCons<'ast, U>) -> Self::TyCons<'ast, G>
     where
         F: AstNodeMapFn<U, G>,
         U: AstTy,
@@ -581,19 +587,19 @@ impl AstFunctor for IfStmtF<TyParam> {
         let IfStmtF { span, cond, then_block, else_block } = x;
         IfStmtF {
             span,
-            cond: f.call(cond),
-            then_block: f.call(then_block),
-            else_block: else_block.map(|block| f.call(block)),
+            cond: f.call(SAstNode::Expr(TEq::refl()), cond),
+            then_block: f.call(SAstNode::BlockStmt(TEq::refl()), then_block),
+            else_block: else_block.map(|block| f.call(SAstNode::BlockStmt(TEq::refl()), block)),
         }
     }
 }
 
-impl AstNode for LetStmtF<TyParam> {
-    type TyCons<F: AstTy> = LetStmtF<F>;
+impl AstNode for LetStmtF<'static, TyParam> {
+    type TyCons<'ast, F: AstTy> = LetStmtF<'ast, F>;
 }
 
-impl AstFunctor for LetStmtF<TyParam> {
-    fn fmap<F, U, G>(f: F, x: LetStmtF<U>) -> LetStmtF<G>
+impl AstFunctor for LetStmtF<'static, TyParam> {
+    fn fmap<'ast, F, U, G>(f: F, x: Self::TyCons<'ast, U>) -> Self::TyCons<'ast, G>
     where
         F: AstNodeMapFn<U, G>,
         U: AstTy,
@@ -603,17 +609,17 @@ impl AstFunctor for LetStmtF<TyParam> {
         LetStmtF {
             span,
             ident,
-            init: f.call(init),
+            init: f.call(SAstNode::Expr(TEq::refl()), init),
         }
     }
 }
 
-impl AstNode for ReturnStmtF<TyParam> {
-    type TyCons<F: AstTy> = ReturnStmtF<F>;
+impl AstNode for ReturnStmtF<'static, TyParam> {
+    type TyCons<'ast, F: AstTy> = ReturnStmtF<'ast, F>;
 }
 
-impl AstFunctor for ReturnStmtF<TyParam> {
-    fn fmap<F, U, G>(f: F, x: ReturnStmtF<U>) -> ReturnStmtF<G>
+impl AstFunctor for ReturnStmtF<'static, TyParam> {
+    fn fmap<'ast, F, U, G>(f: F, x: Self::TyCons<'ast, U>) -> Self::TyCons<'ast, G>
     where
         F: AstNodeMapFn<U, G>,
         U: AstTy,
@@ -622,17 +628,17 @@ impl AstFunctor for ReturnStmtF<TyParam> {
         let ReturnStmtF { span, expr } = x;
         ReturnStmtF {
             span,
-            expr: f.call(expr),
+            expr: f.call(SAstNode::Expr(TEq::refl()), expr),
         }
     }
 }
 
-impl AstNode for ExprF<TyParam> {
-    type TyCons<F: AstTy> = ExprF<F>;
+impl AstNode for ExprF<'static, TyParam> {
+    type TyCons<'a, F: AstTy> = ExprF<'a, F>;
 }
 
-impl AstFunctor for ExprF<TyParam> {
-    fn fmap<F, U, G>(f: F, x: ExprF<U>) -> ExprF<G>
+impl AstFunctor for ExprF<'static, TyParam> {
+    fn fmap<'ast, F, U, G>(f: F, x: Self::TyCons<'ast, U>) -> Self::TyCons<'ast, G>
     where
         F: AstNodeMapFn<U, G>,
         U: AstTy,
@@ -642,18 +648,21 @@ impl AstFunctor for ExprF<TyParam> {
 
         match x {
             Ident(ident) => Ident(ident),
-            Add(lhs, rhs) => Add(Box::new(f.call(*lhs)), Box::new(f.call(*rhs))),
+            Add(lhs, rhs) => Add(
+                Box::new(f.call(SAstNode::Expr(TEq::refl()), *lhs)),
+                Box::new(f.call(SAstNode::Expr(TEq::refl()), *rhs))
+            ),
             NumLit(lit) => NumLit(lit),
         }
     }
 }
 
 impl<T: AstNode> AstNode for Box<T> {
-    type TyCons<F: AstTy> = Box<T::TyCons<F>>;
+    type TyCons<'ast, F: AstTy> = Box<T::TyCons<'ast, F>>;
 }
 
 impl<T: AstFunctor> AstFunctor for Box<T> {
-    fn fmap<F, U, G>(f: F, x: Box<T::TyCons<U>>) -> Box<T::TyCons<G>>
+    fn fmap<'ast, F, U, G>(f: F, x: Box<T::TyCons<'ast, U>>) -> Box<T::TyCons<'ast, G>>
     where
         F: AstNodeMapFn<U, G>,
         U: AstTy,
@@ -665,7 +674,8 @@ impl<T: AstFunctor> AstFunctor for Box<T> {
 
 /* --- more trait impls that the derive macro can't auto implement correctly --- */
 
-impl<F: AstTy> Clone for StmtF<F> {
+/*
+impl<'ast, F: AstTy> Clone for StmtF<'ast, F> {
     fn clone(&self) -> Self {
         use StmtF::*;
 
@@ -679,7 +689,7 @@ impl<F: AstTy> Clone for StmtF<F> {
     }
 }
 
-impl<F: AstTy> Clone for BlockStmtF<F> {
+impl<'ast, F: AstTy> Clone for BlockStmtF<'ast, F> {
     fn clone(&self) -> Self {
         BlockStmtF {
             span: self.span,
@@ -688,7 +698,7 @@ impl<F: AstTy> Clone for BlockStmtF<F> {
     }
 }
 
-impl<F: AstTy> Clone for IfStmtF<F> {
+impl<'ast, F: AstTy> Clone for IfStmtF<'ast, F> {
     fn clone(&self) -> Self {
         IfStmtF {
             span: self.span,
@@ -699,7 +709,7 @@ impl<F: AstTy> Clone for IfStmtF<F> {
     }
 }
 
-impl<F: AstTy> Clone for LetStmtF<F> {
+impl<'ast, F: AstTy> Clone for LetStmtF<'ast, F> {
     fn clone(&self) -> Self {
         LetStmtF {
             span: self.span,
@@ -709,7 +719,7 @@ impl<F: AstTy> Clone for LetStmtF<F> {
     }
 }
 
-impl<F: AstTy> Clone for ReturnStmtF<F> {
+impl<'ast, F: AstTy> Clone for ReturnStmtF<'ast, F> {
     fn clone(&self) -> Self {
         ReturnStmtF {
             span: self.span,
@@ -718,7 +728,7 @@ impl<F: AstTy> Clone for ReturnStmtF<F> {
     }
 }
 
-impl<F: AstTy> Clone for ExprF<F> {
+impl<'ast, F: AstTy> Clone for ExprF<'ast, F> {
     fn clone(&self) -> Self {
         use ExprF::*;
 
@@ -729,66 +739,48 @@ impl<F: AstTy> Clone for ExprF<F> {
         }
     }
 }
+*/
 
 /* --- helper --- */
 
 // The fixpoint type
 #[repr(transparent)]
-struct Fix<N: AstNode>(N::TyCons<Fix<TyParam>>);
+struct Fix<'ast, N: AstNode>(N::TyCons<'ast, Fix<'static, TyParam>>);
 
-impl<N: AstFunctor> Fix<N> {
-    fn new(inner: N::TyCons<Fix<TyParam>>) -> Self {
+impl<'ast, N: AstFunctor> Fix<'ast, N> {
+    fn new(inner: N::TyCons<'ast, Fix<'static, TyParam>>) -> Self {
         Self(inner)
     }
 
-    fn out(self) -> N::TyCons<Fix<TyParam>> {
+    fn out(self) -> N::TyCons<'ast, Fix<'static, TyParam>> {
         self.0
     }
 }
 
-fn fix<N: AstFunctor>(inner: N::TyCons<Fix<TyParam>>) -> Fix<N> {
+fn fix<'ast, N: AstFunctor>(inner: N::TyCons<'ast, Fix<'static, TyParam>>) -> Fix<'ast, N> {
     Fix::new(inner)
 }
 
-impl AstTy for Fix<TyParam> {
-    type TyCons<N: AstNode> = Fix<N>;
+impl AstTy for Fix<'static, TyParam> {
+    type TyCons<'ast, N: AstNode> = Fix<'ast, N>;
 }
 
-impl<N: AstNode> Clone for Fix<N> {
+/*
+impl<N: AstNode> Clone for Fix<'static, N> {
     fn clone(&self) -> Self {
         Fix(self.0.clone())
     }
 }
+*/
 
 // The singleton type of AST nodes
 enum SAstNode<N: AstFunctor> {
-    Stmt(TEq<N, StmtF<TyParam>>),
-    BlockStmt(TEq<N, BlockStmtF<TyParam>>),
-    IfStmt(TEq<N, IfStmtF<TyParam>>),
-    LetStmt(TEq<N, LetStmtF<TyParam>>),
-    ReturnStmt(TEq<N, ReturnStmtF<TyParam>>),
-    Expr(TEq<N, ExprF<TyParam>>),
-}
-
-impl<N: AstFunctor + 'static> SAstNode<N> {
-    fn new() -> Self {
-        let id = TypeId::of::<N>();
-        if id == TypeId::of::<StmtF<TyParam>>() {
-            unsafe { SAstNode::Stmt(TEq::sorry()) }
-        } else if id == TypeId::of::<BlockStmtF<TyParam>>() {
-            unsafe { SAstNode::BlockStmt(TEq::sorry()) }
-        } else if id == TypeId::of::<IfStmtF<TyParam>>() {
-            unsafe { SAstNode::IfStmt(TEq::sorry()) }
-        } else if id == TypeId::of::<LetStmtF<TyParam>>() {
-            unsafe { SAstNode::LetStmt(TEq::sorry()) }
-        } else if id == TypeId::of::<ReturnStmtF<TyParam>>() {
-            unsafe { SAstNode::ReturnStmt(TEq::sorry()) }
-        } else if id == TypeId::of::<ExprF<TyParam>>() {
-            unsafe { SAstNode::Expr(TEq::sorry()) }
-        } else {
-            unreachable!()
-        }
-    }
+    Stmt(TEq<N, StmtF<'static, TyParam>>),
+    BlockStmt(TEq<N, BlockStmtF<'static, TyParam>>),
+    IfStmt(TEq<N, IfStmtF<'static, TyParam>>),
+    LetStmt(TEq<N, LetStmtF<'static, TyParam>>),
+    ReturnStmt(TEq<N, ReturnStmtF<'static, TyParam>>),
+    Expr(TEq<N, ExprF<'static, TyParam>>),
 }
 
 /* --- type equality proofs --- */
@@ -829,10 +821,10 @@ impl<A, B> TEq<A, B> {
 }
 
 impl<A: AstFunctor, B: AstFunctor> TEq<A, B> {
-    fn transmute_hkt<T: AstTy>(self, value: A::TyCons<T>) -> B::TyCons<T> {
+    fn transmute_hkt<'ast, T: AstTy>(self, value: A::TyCons<'ast, T>) -> B::TyCons<'ast, T> {
         // SAFETY: `self` is proof that `A` and `B` are the same type
         unsafe {
-            let b = std::mem::transmute_copy::<A::TyCons<T>, B::TyCons<T>>(&value);
+            let b = std::mem::transmute_copy(&value);
             std::mem::forget(value);
             b
         }
