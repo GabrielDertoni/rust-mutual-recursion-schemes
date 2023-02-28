@@ -13,7 +13,7 @@ fn main() {
     // let foo = v;
     // return v;
     // ```
-    let ast = arena.fix(BlockStmtF {
+    let ast = arena.fix::<BlockStmtF<TyParam>>(BlockStmtF {
         span: Span,
         stmts: vec![
             arena.fix(StmtF::Let(arena.fix(LetStmtF {
@@ -35,7 +35,7 @@ fn main() {
             })))
         ],
     });
-    let count = arena_cata(&CountLetsCataFn, SAstNode::BlockStmt(TEq::refl()), ast).count;
+    let count = cata::<ArenaFix<TyParam>, _, _>(&CountLetsCataFn, SAstNode::BlockStmt(TEq::refl()), ast).count;
     println!("{count}");
     println!("allocated: {} bytes", arena.allocated_bytes());
 
@@ -103,7 +103,8 @@ impl<F: AstNode> CountLets<F> {
     }
 }
 
-impl AstTy for CountLets<TyParam> {
+// SAFETY: The lifetime of `CountLets` is 'static and thus doesn't are about 'ast
+unsafe impl AstTy for CountLets<TyParam> {
     type TyCons<'ast, F: AstNode + 'ast> = CountLets<F>;
 }
 
@@ -392,64 +393,64 @@ impl<T: CataFn> CataFn for &'_ T {
     }
 }
 
-fn cata<N, C>(f: C, n: SAstNode<N>, node: Fix<N>) -> App<'static, C::F, N>
-where
-    N: AstFunctor,
-    C: CataFn + Copy,
-    C::F: 'static,
-{
-    struct Fn<C: CataFn>(C);
-
-    impl<C> AstNodeMapFn<'static, Fix<TyParam>, C::F> for Fn<C>
-    where
-        C: CataFn + Copy,
-        C::F: 'static,
-    {
-        fn call<N>(&self, n: SAstNode<N>, x: App<'static, Fix<TyParam>, N>) -> App<'static, C::F, N>
-        where
-            N: AstFunctor,
-        {
-            cata(self.0, n, x)
-        }
-    }
-    f.call(n, N::fmap(Fn(f), node.out()))
+trait Fixpoint: AstTy + Sized {
+    fn out<'ast, N: AstFunctor + 'ast>(this: Self::TyCons<'ast, N>) -> N::TyCons<'ast, Self>;
 }
 
-fn arena_cata<'ast, N, C>(
+impl Fixpoint for Fix<TyParam> {
+    fn out<'ast, N: AstFunctor + 'ast>(this: Self::TyCons<'ast, N>) -> N::TyCons<'ast, Self> {
+        // SAFETY??: The compiler thinks that 'ast has to outlive 'static here. I think it's
+        // because it considers the 'ast lifetime in `TyCons` as invariant. However, the lifetime
+        // is indeed covariant in this case, so it's fine to transmute a larger lifetime into a
+        // smaller one.
+        unsafe { std::mem::transmute(this.out()) }
+    }
+}
+
+impl Fixpoint for ArenaFix<'static, TyParam> {
+    fn out<'ast, N: AstFunctor + 'ast>(this: Self::TyCons<'ast, N>) -> N::TyCons<'ast, Self> {
+        this.out()
+    }
+}
+
+fn cata<'ast, F, N, C>(
     f: C,
     n: SAstNode<N>,
-    node: ArenaFix<'ast, N>,
+    node: <F as AstTy>::TyCons<'ast, N>,
 ) -> App<'ast, C::F, N>
 where
+    F: Fixpoint + 'ast,
     N: AstFunctor,
     C: CataFn + Copy,
     C::F: 'ast,
 {
-    struct Fn<C: CataFn>(C);
+    struct Fn<F, C: CataFn>(C, PhantomData<fn(F) -> F>);
 
-    impl<'ast, C> AstNodeMapFn<'ast, ArenaFix<'static, TyParam>, C::F> for Fn<C>
+    impl<'ast, F, C> AstNodeMapFn<'ast, F, C::F> for Fn<F, C>
     where
+        F: Fixpoint + 'ast,
         C: CataFn + Copy,
         C::F: 'ast,
     {
         fn call<N>(
             &self,
             n: SAstNode<N>,
-            x: App<'ast, ArenaFix<'static, TyParam>, N>
+            x: App<'ast, F, N>
         ) -> App<'ast, C::F, N>
         where
             N: AstFunctor,
         {
-            arena_cata(self.0, n, x)
+            cata::<'ast, F, N, C>(self.0, n, x)
         }
     }
-    f.call(n, N::fmap(Fn(f), node.out()))
+    f.call(n, N::fmap(Fn::<F, C>(f, PhantomData), F::out(node)))
 }
 
 /* --- traits --- */
 
 // Represents the fact that `Self` has kind `AstFunctor -> Type`
-trait AstTy {
+// SAFETY: 'ast has to be covariant.
+unsafe trait AstTy {
     type TyCons<'ast, N: AstNode + 'ast>: 'ast/*: Clone /* unfortunatelly appears to be needed */*/;
 }
 
@@ -506,7 +507,8 @@ impl AstFunctor for TyParam {
     }
 }
 
-impl AstTy for TyParam {
+// SAFETY: We can never construct `TyParam`.
+unsafe impl AstTy for TyParam {
     type TyCons<'ast, N: AstNode + 'ast> = TyParam;
 }
 
@@ -790,7 +792,8 @@ fn fix<'ast, N: AstFunctor>(inner: N::TyCons<'static, Fix<TyParam>>) -> Fix<N> {
     Fix::new(inner)
 }
 
-impl AstTy for Fix<TyParam> {
+// SAFETY: `Fix<N>` has lifetime 'static, so it doesn't matter the lifetime 'ast
+unsafe impl AstTy for Fix<TyParam> {
     type TyCons<'ast, N: AstNode + 'ast> = Fix<N>;
 }
 
@@ -823,7 +826,8 @@ impl ArenaExt for Bump {
     }
 }
 
-impl AstTy for ArenaFix<'static, TyParam> {
+// SAFETY: `ArenaFix<'ast, N>` is indeed covariant with respect to 'ast.
+unsafe impl AstTy for ArenaFix<'static, TyParam> {
     type TyCons<'ast, N: AstNode + 'ast> = ArenaFix<'ast, N>;
 }
 
